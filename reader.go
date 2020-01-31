@@ -7,6 +7,34 @@ import (
 	"log"
 )
 
+type ValueType byte
+
+const (
+	NullType    ValueType = 1
+	HashType    ValueType = 2
+	ArrayType   ValueType = 3
+	StringType  ValueType = 4
+	IntegerType ValueType = 5
+	DoubleType  ValueType = 6
+)
+
+type Value struct {
+	typ ValueType
+
+	str     string
+	integer int
+	double  float64
+	hash    map[string]*Value
+	array   []*Value
+}
+
+func (v *Value) isNull() bool    { return v.typ == NullType }
+func (v *Value) isHash() bool    { return v.typ == HashType }
+func (v *Value) isString() bool  { return v.typ == StringType }
+func (v *Value) isInteger() bool { return v.typ == IntegerType }
+func (v *Value) isDouble() bool  { return v.typ == DoubleType }
+func (v *Value) isArray() bool   { return v.typ == ArrayType }
+
 type Reader struct {
 	Reader  io.ReadSeeker
 	method  int
