@@ -8,8 +8,9 @@ import (
 )
 
 type Reader struct {
-	Reader io.ReadSeeker
-	method int
+	Reader  io.ReadSeeker
+	method  int
+	offsets []int32
 }
 
 var magicBytes = [...]byte{
@@ -55,6 +56,37 @@ func (r *Reader) ReadPack() error {
 
 supported:
 
+	if err := r.readOffsets(buf); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *Reader) readOffsets(buf []byte) error {
+	if len(buf) < 12 {
+		return errors.New("directory too short")
+	}
+	plo := binary.LittleEndian.Uint32(buf[8:])
+
+	if plo < 12 || int(plo) >= len(buf)-4 {
+		return errors.New("ggpack plo out of range")
+	}
+	if buf[plo] != 7 {
+		return errors.New("ggpack cannot find plo")
+	}
+
+	r.offsets = r.offsets[:0]
+
+	for pos := plo + 1; int(pos+4) < len(buf); pos += 4 {
+		offset := binary.LittleEndian.Uint32(buf[pos:])
+		if offset == 0xffffffff {
+			break
+		}
+		r.offsets = append(r.offsets, int32(offset))
+
+	}
+	log.Printf("num offsets: %d\n", len(r.offsets))
 	return nil
 }
 
