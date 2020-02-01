@@ -24,21 +24,45 @@ type Value struct {
 	str     string
 	integer int
 	double  float64
-	hash    map[string]*Value
-	array   []*Value
+	//hash    map[string]*Value
+	array []*Value
 }
 
-func (v *Value) isNull() bool    { return v.typ == NullType }
-func (v *Value) isHash() bool    { return v.typ == HashType }
-func (v *Value) isString() bool  { return v.typ == StringType }
-func (v *Value) isInteger() bool { return v.typ == IntegerType }
-func (v *Value) isDouble() bool  { return v.typ == DoubleType }
-func (v *Value) isArray() bool   { return v.typ == ArrayType }
+var Null = Value{typ: NullType}
+
+func (v *Value) GetType() ValueType { return v.typ }
+
+func (vt ValueType) isNull() bool    { return vt == NullType }
+func (vt ValueType) isHash() bool    { return vt == HashType }
+func (vt ValueType) isString() bool  { return vt == StringType }
+func (vt ValueType) isInteger() bool { return vt == IntegerType }
+func (vt ValueType) isDouble() bool  { return vt == DoubleType }
+func (vt ValueType) isArray() bool   { return vt == ArrayType }
+
+func (vt ValueType) String() string {
+	switch vt {
+	case NullType:
+		return "null"
+	case HashType:
+		return "hash"
+	case ArrayType:
+		return "array"
+	case StringType:
+		return "string"
+	case DoubleType:
+		return "double"
+	case IntegerType:
+		return "integer"
+	default:
+		return "unknown"
+	}
+}
 
 type Reader struct {
 	Reader  io.ReadSeeker
 	method  int
 	offsets []int32
+	entries []*Value
 }
 
 var magicBytes = [...]byte{
@@ -88,7 +112,77 @@ supported:
 		return err
 	}
 
+	r.clearEntries()
+
+	entries, err := r.readHash(buf)
+	if err != nil {
+		return err
+	}
+
+	_ = entries
+
 	return nil
+}
+
+func (r *Reader) readHash(buf []byte) (*Value, error) {
+
+	if len(buf) < 12 {
+		return nil, errors.New("directory too short")
+	}
+
+	value := Value{typ: HashType}
+
+	if err := value.readHash(buf[12:], r.offsets); err != nil {
+		return nil, err
+	}
+
+	return &value, nil
+}
+
+func (v *Value) readHash(buf []byte, offsets []int32) error {
+	if ValueType(buf[0]) != HashType {
+		return errors.New("trying to parse non-hash")
+	}
+	numEntries := int32(binary.LittleEndian.Uint32(buf[1:]))
+	log.Printf("num entries: %d\n", numEntries)
+
+	if numEntries == 0 {
+		return errors.New("empty hash")
+	}
+
+	buf = buf[1+4:]
+
+	for i := int32(0); i < numEntries; i++ {
+		keyIdx := int32(binary.LittleEndian.Uint32(buf))
+
+		keyOfs := offsets[keyIdx]
+
+		key := readString(buf[keyOfs:])
+
+		log.Printf("key: '%s'\n", key)
+
+		buf = buf[4:]
+		// TODO: Read value
+	}
+	return nil
+}
+
+func readString(buf []byte) string {
+
+	end := 0
+
+	for len(buf) > end && buf[end] != 0 {
+		end++
+	}
+
+	return string(buf[:end])
+}
+
+func (r *Reader) clearEntries() {
+	for i := range r.entries {
+		r.entries[i] = nil
+	}
+	r.entries = r.entries[:0]
 }
 
 func (r *Reader) readOffsets(buf []byte) error {
