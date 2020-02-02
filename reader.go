@@ -120,7 +120,7 @@ func (r *Reader) ReadPack() error {
 		if _, err := io.ReadFull(r.Reader, buf); err != nil {
 			return err
 		}
-		r.decodeXOR(buf)
+		r.DecodeXOR(buf)
 		if len(buf) < 4 {
 			return errTooShort
 		}
@@ -350,7 +350,7 @@ func (r *Reader) readOffsets(buf []byte) error {
 	return nil
 }
 
-func (r *Reader) decodeXOR(buf []byte) {
+func (r *Reader) DecodeXOR(buf []byte) {
 
 	var code int
 	if r.method != 2 {
