@@ -164,12 +164,11 @@ func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 
 	for i := int32(0); i < numEntries; i++ {
 		offset := int32(binary.LittleEndian.Uint32(*buf))
+		*buf = (*buf)[4:]
 
 		key := r.readString(orig, offset)
 
 		log.Printf("rh key: '%s'\n", key)
-
-		*buf = (*buf)[4:]
 
 		entry, err := r.readValue(buf, orig)
 		if err != nil {
@@ -216,7 +215,6 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 			if err != nil {
 				return nil, err
 			}
-			*buf = (*buf)[4:]
 			v.array = append(v.array, value)
 		}
 		if ValueType((*buf)[0]) != ArrayType {
