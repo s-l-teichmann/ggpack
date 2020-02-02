@@ -414,7 +414,7 @@ var bnutPass = [...]byte{
 }
 
 func DecodeBnut(code []byte) {
-	cursor := (len(code)) & 0xff
+	cursor := len(code) & 0xff
 	for i := range code {
 		code[i] ^= bnutPass[cursor]
 		cursor = (cursor + 1) % len(bnutPass)
