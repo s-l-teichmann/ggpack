@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+var errTooShort = errors.New("buffer too short")
+
 type ValueType byte
 
 const (
@@ -49,13 +51,6 @@ var Null = &Value{typ: NullType}
 
 func (v *Value) GetType() ValueType { return v.typ }
 
-func (vt ValueType) isNull() bool    { return vt == NullType }
-func (vt ValueType) isHash() bool    { return vt == HashType }
-func (vt ValueType) isString() bool  { return vt == StringType }
-func (vt ValueType) isInteger() bool { return vt == IntegerType }
-func (vt ValueType) isDouble() bool  { return vt == DoubleType }
-func (vt ValueType) isArray() bool   { return vt == ArrayType }
-
 func (vt ValueType) String() string {
 	switch vt {
 	case NullType:
@@ -79,7 +74,7 @@ type Reader struct {
 	Reader  io.ReadSeeker
 	method  int
 	offsets []int32
-	entries []*Value
+	entries *Value
 }
 
 var magicBytes = [...]byte{
@@ -115,7 +110,10 @@ func (r *Reader) ReadPack() error {
 			return err
 		}
 		r.decodeXOR(buf)
-		if sign = binary.LittleEndian.Uint32(buf[:4]); sign == 0x04030201 {
+		if len(buf) < 4 {
+			return errTooShort
+		}
+		if sign = binary.LittleEndian.Uint32(buf); sign == 0x04030201 {
 			log.Printf("using method: %d\n", r.method)
 			goto supported
 		}
@@ -137,36 +135,65 @@ supported:
 		return err
 	}
 
-	r.clearEntries()
-	_ = entries
+	r.entries = entries
 
 	return nil
 }
 
+func readByte(buf *[]byte) (byte, error) {
+	if len(*buf) < 1 {
+		return 0, errTooShort
+	}
+	x := (*buf)[0]
+	*buf = (*buf)[1:]
+	return x, nil
+}
+
+func readInt(buf *[]byte) (int32, error) {
+	if len(*buf) < 4 {
+		return 0, errTooShort
+	}
+	x := int32(binary.LittleEndian.Uint32(*buf))
+	*buf = (*buf)[4:]
+	return x, nil
+}
+
 func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 
-	if ValueType((*buf)[0]) != HashType {
+	t, err := readByte(buf)
+	if err != nil {
+		return nil, err
+	}
+
+	if ValueType(t) != HashType {
 		return nil, errors.New("trying to parse non-hash")
 	}
-	*buf = (*buf)[1:]
-	numEntries := int32(binary.LittleEndian.Uint32(*buf))
+
+	numEntries, err := readInt(buf)
+	if err != nil {
+		return nil, err
+	}
+
 	log.Printf("rh num entries: %d\n", numEntries)
 
 	if numEntries == 0 {
-		return nil, errors.New("empty hash")
+		return nil, errTooShort
 	}
-
-	*buf = (*buf)[4:]
 
 	value := Value{typ: HashType}
 
 	value.hash = make(HashEntries, 0, numEntries)
 
 	for i := int32(0); i < numEntries; i++ {
-		offset := int32(binary.LittleEndian.Uint32(*buf))
-		*buf = (*buf)[4:]
+		offset, err := readInt(buf)
+		if err != nil {
+			return nil, err
+		}
 
-		key := r.readString(orig, offset)
+		key, err := r.readString(orig, offset)
+		if err != nil {
+			return nil, err
+		}
 
 		log.Printf("rh key: '%s'\n", key)
 
@@ -179,10 +206,12 @@ func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 			value: entry,
 		})
 	}
-	if ValueType((*buf)[0]) != HashType {
+	if t, err = readByte(buf); err != nil {
+		return nil, err
+	}
+	if ValueType(t) != HashType {
 		return nil, errors.New("unterminated hash")
 	}
-	*buf = (*buf)[1:]
 
 	sort.Sort(value.hash)
 
@@ -192,6 +221,10 @@ func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 }
 
 func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
+
+	if len(*buf) < 1 {
+		return nil, errTooShort
+	}
 
 	v := Value{typ: ValueType((*buf)[0])}
 
@@ -205,10 +238,12 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 	case ArrayType:
 		*buf = (*buf)[1:]
 		log.Println("rv array")
-		numEntries := int32(binary.LittleEndian.Uint32(*buf))
+		numEntries, err := readInt(buf)
+		if err != nil {
+			return nil, err
+		}
 		log.Printf("rv array num entries: %d\n", numEntries)
 		v.array = make([]*Value, 0, numEntries)
-		*buf = (*buf)[4:]
 		for i := int32(0); i < numEntries; i++ {
 			log.Printf("rv array index %d\n", i)
 			value, err := r.readValue(buf, orig)
@@ -217,24 +252,36 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 			}
 			v.array = append(v.array, value)
 		}
-		if ValueType((*buf)[0]) != ArrayType {
+		t, err := readByte(buf)
+		if err != nil {
+			return nil, err
+		}
+		if ValueType(t) != ArrayType {
 			return nil, errors.New("unterminated array")
 		}
-		*buf = (*buf)[1:]
 		log.Println("array finished")
 
 	case StringType:
 		*buf = (*buf)[1:]
-		ofs := int32(binary.LittleEndian.Uint32(*buf))
-		v.str = r.readString(orig, ofs)
-		*buf = (*buf)[4:]
+		ofs, err := readInt(buf)
+		if err != nil {
+			return nil, err
+		}
+		if v.str, err = r.readString(orig, ofs); err != nil {
+			return nil, err
+		}
 		log.Printf("rv string: %s\n", v.str)
 
 	case DoubleType, IntegerType:
 		*buf = (*buf)[1:]
-		ofs := int32(binary.LittleEndian.Uint32(*buf))
-		num := r.readString(orig, ofs)
-		*buf = (*buf)[4:]
+		ofs, err := readInt(buf)
+		if err != nil {
+			return nil, err
+		}
+		num, err := r.readString(orig, ofs)
+		if err != nil {
+			return nil, err
+		}
 		if v.typ == IntegerType {
 			var err error
 			if v.integer, err = strconv.ParseInt(num, 10, 64); err != nil {
@@ -256,9 +303,17 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 	return &v, nil
 }
 
-func (r *Reader) readString(buf []byte, offset int32) string {
+func (r *Reader) readString(buf []byte, offset int32) (string, error) {
+
+	if offset < 0 || int(offset) >= len(r.offsets) {
+		return "", fmt.Errorf("invalid offset index: %d", offset)
+	}
 
 	ofs := r.offsets[offset]
+
+	if ofs < 0 || int(ofs) >= len(buf) {
+		return "", fmt.Errorf("invalid offset: %d", ofs)
+	}
 
 	buf = buf[ofs:]
 
@@ -268,19 +323,12 @@ func (r *Reader) readString(buf []byte, offset int32) string {
 		end++
 	}
 
-	return string(buf[:end])
-}
-
-func (r *Reader) clearEntries() {
-	for i := range r.entries {
-		r.entries[i] = nil
-	}
-	r.entries = r.entries[:0]
+	return string(buf[:end]), nil
 }
 
 func (r *Reader) readOffsets(buf []byte) error {
 	if len(buf) < 12 {
-		return errors.New("directory too short")
+		return errTooShort
 	}
 	plo := binary.LittleEndian.Uint32(buf[8:])
 
