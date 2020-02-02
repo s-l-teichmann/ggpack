@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,17 +24,11 @@ const (
 )
 
 type HashEntry struct {
-	key   string
-	value *Value
+	Key   string
+	Value *Value
 }
 
 type HashEntries []HashEntry
-
-func (he HashEntries) Len() int      { return len(he) }
-func (he HashEntries) Swap(i, j int) { he[i], he[j] = he[j], he[i] }
-func (he HashEntries) Less(i, j int) bool {
-	return strings.ToLower(he[i].key) < strings.ToLower(he[j].key)
-}
 
 type Value struct {
 	typ ValueType
@@ -49,7 +42,12 @@ type Value struct {
 
 var Null = &Value{typ: NullType}
 
-func (v *Value) GetType() ValueType { return v.typ }
+func (v *Value) Type() ValueType   { return v.typ }
+func (v *Value) String() string    { return v.str }
+func (v *Value) Integer() int64    { return v.integer }
+func (v *Value) Double() float64   { return v.double }
+func (v *Value) Array() []*Value   { return v.array }
+func (v *Value) Hash() HashEntries { return v.hash }
 
 func (vt ValueType) String() string {
 	switch vt {
@@ -77,6 +75,21 @@ type Reader struct {
 	entries *Value
 }
 
+func (r *Reader) Entries() *Value { return r.entries }
+
+func (v *Value) Find(name string) *Value {
+	if v == nil || v.typ != HashType {
+		return nil
+	}
+	idx := sort.Search(len(v.hash), func(i int) bool {
+		return v.hash[i].Key >= name
+	})
+	if idx < len(v.hash) && name == strings.ToLower(v.hash[idx].Key) {
+		return v.hash[idx].Value
+	}
+	return nil
+}
+
 var magicBytes = [...]byte{
 	0x4f, 0xd0, 0xa0, 0xac,
 	0x4a, 0x5b, 0xb9, 0xe5,
@@ -95,8 +108,6 @@ func (r *Reader) ReadPack() error {
 		return err
 	}
 
-	log.Printf("offset: %d size: %d\n", offset, size)
-
 	buf := make([]byte, size)
 
 	var sign uint32
@@ -114,7 +125,6 @@ func (r *Reader) ReadPack() error {
 			return errTooShort
 		}
 		if sign = binary.LittleEndian.Uint32(buf); sign == 0x04030201 {
-			log.Printf("using method: %d\n", r.method)
 			goto supported
 		}
 	}
@@ -174,8 +184,6 @@ func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 		return nil, err
 	}
 
-	log.Printf("rh num entries: %d\n", numEntries)
-
 	if numEntries == 0 {
 		return nil, errTooShort
 	}
@@ -195,15 +203,13 @@ func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 			return nil, err
 		}
 
-		log.Printf("rh key: '%s'\n", key)
-
 		entry, err := r.readValue(buf, orig)
 		if err != nil {
 			return nil, err
 		}
 		value.hash = append(value.hash, HashEntry{
-			key:   key,
-			value: entry,
+			Key:   key,
+			Value: entry,
 		})
 	}
 	if t, err = readByte(buf); err != nil {
@@ -213,9 +219,9 @@ func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 		return nil, errors.New("unterminated hash")
 	}
 
-	sort.Sort(value.hash)
-
-	log.Println("hash finished")
+	sort.Slice(value.hash, func(i, j int) bool {
+		return value.hash[i].Key < value.hash[j].Key
+	})
 
 	return &value, nil
 }
@@ -230,22 +236,18 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 
 	switch v.typ {
 	case NullType:
-		log.Println("rv null")
 		*buf = (*buf)[1:]
 		return Null, nil
 	case HashType:
 		return r.readHash(buf, orig)
 	case ArrayType:
 		*buf = (*buf)[1:]
-		log.Println("rv array")
 		numEntries, err := readInt(buf)
 		if err != nil {
 			return nil, err
 		}
-		log.Printf("rv array num entries: %d\n", numEntries)
 		v.array = make([]*Value, 0, numEntries)
 		for i := int32(0); i < numEntries; i++ {
-			log.Printf("rv array index %d\n", i)
 			value, err := r.readValue(buf, orig)
 			if err != nil {
 				return nil, err
@@ -259,7 +261,6 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 		if ValueType(t) != ArrayType {
 			return nil, errors.New("unterminated array")
 		}
-		log.Println("array finished")
 
 	case StringType:
 		*buf = (*buf)[1:]
@@ -270,7 +271,6 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 		if v.str, err = r.readString(orig, ofs); err != nil {
 			return nil, err
 		}
-		log.Printf("rv string: %s\n", v.str)
 
 	case DoubleType, IntegerType:
 		*buf = (*buf)[1:]
@@ -287,13 +287,11 @@ func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 			if v.integer, err = strconv.ParseInt(num, 10, 64); err != nil {
 				return nil, fmt.Errorf("invalid integer: %s", num)
 			}
-			log.Printf("rv integer: %d\n", v.integer)
 		} else {
 			var err error
 			if v.double, err = strconv.ParseFloat(num, 64); err != nil {
 				return nil, fmt.Errorf("invalid double: %s", num)
 			}
-			log.Printf("rv double: %f\n", v.double)
 		}
 
 	default:
@@ -349,7 +347,6 @@ func (r *Reader) readOffsets(buf []byte) error {
 		r.offsets = append(r.offsets, int32(offset))
 
 	}
-	log.Printf("num offsets: %d\n", len(r.offsets))
 	return nil
 }
 
