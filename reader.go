@@ -3,8 +3,11 @@ package ggpack
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"sort"
+	"strings"
 )
 
 type ValueType byte
@@ -18,17 +21,30 @@ const (
 	DoubleType  ValueType = 6
 )
 
+type HashEntry struct {
+	key   string
+	value *Value
+}
+
+type HashEntries []HashEntry
+
+func (he HashEntries) Len() int      { return len(he) }
+func (he HashEntries) Swap(i, j int) { he[i], he[j] = he[j], he[i] }
+func (he HashEntries) Less(i, j int) bool {
+	return strings.ToLower(he[i].key) < strings.ToLower(he[j].key)
+}
+
 type Value struct {
 	typ ValueType
 
 	str     string
 	integer int
 	double  float64
-	//hash    map[string]*Value
-	array []*Value
+	hash    HashEntries
+	array   []*Value
 }
 
-var Null = Value{typ: NullType}
+var Null = &Value{typ: NullType}
 
 func (v *Value) GetType() ValueType { return v.typ }
 
@@ -54,7 +70,7 @@ func (vt ValueType) String() string {
 	case IntegerType:
 		return "integer"
 	default:
-		return "unknown"
+		return fmt.Sprintf("unknown (%d)", byte(vt))
 	}
 }
 
@@ -112,9 +128,11 @@ supported:
 		return err
 	}
 
+	//ioutil.WriteFile("x.tmp", buf, 0666)
+
 	r.clearEntries()
 
-	entries, err := r.readHash(buf)
+	entries, err := r.readHash(buf[12:])
 	if err != nil {
 		return err
 	}
@@ -126,45 +144,69 @@ supported:
 
 func (r *Reader) readHash(buf []byte) (*Value, error) {
 
-	if len(buf) < 12 {
-		return nil, errors.New("directory too short")
-	}
-
-	value := Value{typ: HashType}
-
-	if err := value.readHash(buf[12:], r.offsets); err != nil {
-		return nil, err
-	}
-
-	return &value, nil
-}
-
-func (v *Value) readHash(buf []byte, offsets []int32) error {
 	if ValueType(buf[0]) != HashType {
-		return errors.New("trying to parse non-hash")
+		return nil, errors.New("trying to parse non-hash")
 	}
 	numEntries := int32(binary.LittleEndian.Uint32(buf[1:]))
 	log.Printf("num entries: %d\n", numEntries)
 
 	if numEntries == 0 {
-		return errors.New("empty hash")
+		return nil, errors.New("empty hash")
 	}
 
 	buf = buf[1+4:]
 
+	value := Value{typ: HashType}
+
 	for i := int32(0); i < numEntries; i++ {
 		keyIdx := int32(binary.LittleEndian.Uint32(buf))
 
-		keyOfs := offsets[keyIdx]
+		keyOfs := r.offsets[keyIdx]
 
 		key := readString(buf[keyOfs:])
 
 		log.Printf("key: '%s'\n", key)
 
 		buf = buf[4:]
-		// TODO: Read value
+
+		entry, err := r.readValue(buf)
+		if err != nil {
+			return nil, err
+		}
+		value.hash = append(value.hash, HashEntry{
+			key:   key,
+			value: entry,
+		})
 	}
-	return nil
+	sort.Sort(value.hash)
+
+	return &value, nil
+}
+
+func (r *Reader) readValue(buf []byte) (*Value, error) {
+
+	v := Value{typ: ValueType(buf[0])}
+
+	fmt.Printf("type: %s\n", v.typ)
+
+	switch v.typ {
+	case NullType:
+		return Null, nil
+	case HashType:
+		return r.readHash(buf)
+	case ArrayType:
+		numEntries := int32(binary.LittleEndian.Uint32(buf[1:]))
+		log.Printf("num entries: %d\n", numEntries)
+		for i := int32(0); i < numEntries; i++ {
+			buf = buf[5:]
+			r.readValue(buf)
+			break
+		}
+		return nil, errors.New("not implemented, yet")
+
+	}
+
+	return &v, nil
 }
 
 func readString(buf []byte) string {
