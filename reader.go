@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -38,7 +39,7 @@ type Value struct {
 	typ ValueType
 
 	str     string
-	integer int
+	integer int64
 	double  float64
 	hash    HashEntries
 	array   []*Value
@@ -129,8 +130,9 @@ supported:
 	}
 
 	//ioutil.WriteFile("x.tmp", buf, 0666)
+	slice := buf[12:]
 
-	entries, err := r.readHash(buf[12:], buf)
+	entries, err := r.readHash(&slice, buf)
 	if err != nil {
 		return err
 	}
@@ -141,30 +143,33 @@ supported:
 	return nil
 }
 
-func (r *Reader) readHash(buf, orig []byte) (*Value, error) {
+func (r *Reader) readHash(buf *[]byte, orig []byte) (*Value, error) {
 
-	if ValueType(buf[0]) != HashType {
+	if ValueType((*buf)[0]) != HashType {
 		return nil, errors.New("trying to parse non-hash")
 	}
-	numEntries := int32(binary.LittleEndian.Uint32(buf[1:]))
-	log.Printf("num entries: %d\n", numEntries)
+	*buf = (*buf)[1:]
+	numEntries := int32(binary.LittleEndian.Uint32(*buf))
+	log.Printf("rh num entries: %d\n", numEntries)
 
 	if numEntries == 0 {
 		return nil, errors.New("empty hash")
 	}
 
-	buf = buf[1+4:]
+	*buf = (*buf)[4:]
 
 	value := Value{typ: HashType}
 
+	value.hash = make(HashEntries, 0, numEntries)
+
 	for i := int32(0); i < numEntries; i++ {
-		offset := int32(binary.LittleEndian.Uint32(buf))
+		offset := int32(binary.LittleEndian.Uint32(*buf))
 
 		key := r.readString(orig, offset)
 
-		log.Printf("key: '%s'\n", key)
+		log.Printf("rh key: '%s'\n", key)
 
-		buf = buf[4:]
+		*buf = (*buf)[4:]
 
 		entry, err := r.readValue(buf, orig)
 		if err != nil {
@@ -175,47 +180,76 @@ func (r *Reader) readHash(buf, orig []byte) (*Value, error) {
 			value: entry,
 		})
 	}
+	if ValueType((*buf)[0]) != HashType {
+		return nil, errors.New("unterminated hash")
+	}
+	*buf = (*buf)[1:]
+
 	sort.Sort(value.hash)
+
+	log.Println("hash finished")
 
 	return &value, nil
 }
 
-func (r *Reader) readValue(buf, orig []byte) (*Value, error) {
+func (r *Reader) readValue(buf *[]byte, orig []byte) (*Value, error) {
 
-	v := Value{typ: ValueType(buf[0])}
-
-	log.Printf("rv type: %s\n", v.typ)
+	v := Value{typ: ValueType((*buf)[0])}
 
 	switch v.typ {
 	case NullType:
+		log.Println("rv null")
+		*buf = (*buf)[1:]
 		return Null, nil
 	case HashType:
 		return r.readHash(buf, orig)
 	case ArrayType:
+		*buf = (*buf)[1:]
 		log.Println("rv array")
-		numEntries := int32(binary.LittleEndian.Uint32(buf[1:]))
+		numEntries := int32(binary.LittleEndian.Uint32(*buf))
 		log.Printf("rv array num entries: %d\n", numEntries)
-		buf = buf[1+4:]
+		v.array = make([]*Value, 0, numEntries)
+		*buf = (*buf)[4:]
 		for i := int32(0); i < numEntries; i++ {
+			log.Printf("rv array index %d\n", i)
 			value, err := r.readValue(buf, orig)
 			if err != nil {
 				return nil, err
 			}
-			buf = buf[4:]
+			*buf = (*buf)[4:]
 			v.array = append(v.array, value)
 		}
-		if ValueType(buf[0]) != ArrayType {
+		if ValueType((*buf)[0]) != ArrayType {
 			return nil, errors.New("unterminated array")
 		}
-		return &v, nil
+		*buf = (*buf)[1:]
+		log.Println("array finished")
 
 	case StringType:
-		ofs := int32(binary.LittleEndian.Uint32(buf[1:]))
+		*buf = (*buf)[1:]
+		ofs := int32(binary.LittleEndian.Uint32(*buf))
 		v.str = r.readString(orig, ofs)
+		*buf = (*buf)[4:]
 		log.Printf("rv string: %s\n", v.str)
-		return &v, nil
+
 	case DoubleType, IntegerType:
-		return nil, errors.New("not implemented, yet")
+		*buf = (*buf)[1:]
+		ofs := int32(binary.LittleEndian.Uint32(*buf))
+		num := r.readString(orig, ofs)
+		*buf = (*buf)[4:]
+		if v.typ == IntegerType {
+			var err error
+			if v.integer, err = strconv.ParseInt(num, 10, 64); err != nil {
+				return nil, fmt.Errorf("invalid integer: %s", num)
+			}
+			log.Printf("rv integer: %d\n", v.integer)
+		} else {
+			var err error
+			if v.double, err = strconv.ParseFloat(num, 64); err != nil {
+				return nil, fmt.Errorf("invalid double: %s", num)
+			}
+			log.Printf("rv double: %f\n", v.double)
+		}
 
 	default:
 		return nil, fmt.Errorf("unsupported value: %s", v.typ)
