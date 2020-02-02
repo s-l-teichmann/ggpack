@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/s-l-teichmann/ggpack"
 )
@@ -113,6 +114,9 @@ func process(fname string) error {
 				return err
 			}
 			index.DecodeXOR(buf)
+			if strings.HasSuffix(strings.ToLower(name), ".bnut") {
+				ggpack.DecodeBnut(buf)
+			}
 			fname := filepath.Join(dir, name)
 			return ioutil.WriteFile(fname, buf, 0666)
 		})
