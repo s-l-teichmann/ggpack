@@ -130,19 +130,18 @@ supported:
 
 	//ioutil.WriteFile("x.tmp", buf, 0666)
 
-	r.clearEntries()
-
-	entries, err := r.readHash(buf[12:])
+	entries, err := r.readHash(buf[12:], buf)
 	if err != nil {
 		return err
 	}
 
+	r.clearEntries()
 	_ = entries
 
 	return nil
 }
 
-func (r *Reader) readHash(buf []byte) (*Value, error) {
+func (r *Reader) readHash(buf, orig []byte) (*Value, error) {
 
 	if ValueType(buf[0]) != HashType {
 		return nil, errors.New("trying to parse non-hash")
@@ -159,17 +158,15 @@ func (r *Reader) readHash(buf []byte) (*Value, error) {
 	value := Value{typ: HashType}
 
 	for i := int32(0); i < numEntries; i++ {
-		keyIdx := int32(binary.LittleEndian.Uint32(buf))
+		offset := int32(binary.LittleEndian.Uint32(buf))
 
-		keyOfs := r.offsets[keyIdx]
-
-		key := readString(buf[keyOfs:])
+		key := r.readString(orig, offset)
 
 		log.Printf("key: '%s'\n", key)
 
 		buf = buf[4:]
 
-		entry, err := r.readValue(buf)
+		entry, err := r.readValue(buf, orig)
 		if err != nil {
 			return nil, err
 		}
@@ -183,33 +180,55 @@ func (r *Reader) readHash(buf []byte) (*Value, error) {
 	return &value, nil
 }
 
-func (r *Reader) readValue(buf []byte) (*Value, error) {
+func (r *Reader) readValue(buf, orig []byte) (*Value, error) {
 
 	v := Value{typ: ValueType(buf[0])}
 
-	fmt.Printf("type: %s\n", v.typ)
+	log.Printf("rv type: %s\n", v.typ)
 
 	switch v.typ {
 	case NullType:
 		return Null, nil
 	case HashType:
-		return r.readHash(buf)
+		return r.readHash(buf, orig)
 	case ArrayType:
+		log.Println("rv array")
 		numEntries := int32(binary.LittleEndian.Uint32(buf[1:]))
-		log.Printf("num entries: %d\n", numEntries)
+		log.Printf("rv array num entries: %d\n", numEntries)
+		buf = buf[1+4:]
 		for i := int32(0); i < numEntries; i++ {
-			buf = buf[5:]
-			r.readValue(buf)
-			break
+			value, err := r.readValue(buf, orig)
+			if err != nil {
+				return nil, err
+			}
+			buf = buf[4:]
+			v.array = append(v.array, value)
 		}
+		if ValueType(buf[0]) != ArrayType {
+			return nil, errors.New("unterminated array")
+		}
+		return &v, nil
+
+	case StringType:
+		ofs := int32(binary.LittleEndian.Uint32(buf[1:]))
+		v.str = r.readString(orig, ofs)
+		log.Printf("rv string: %s\n", v.str)
+		return &v, nil
+	case DoubleType, IntegerType:
 		return nil, errors.New("not implemented, yet")
 
+	default:
+		return nil, fmt.Errorf("unsupported value: %s", v.typ)
 	}
 
 	return &v, nil
 }
 
-func readString(buf []byte) string {
+func (r *Reader) readString(buf []byte, offset int32) string {
+
+	ofs := r.offsets[offset]
+
+	buf = buf[ofs:]
 
 	end := 0
 
