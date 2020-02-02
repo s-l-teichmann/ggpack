@@ -116,11 +116,20 @@ func process(fname string) error {
 			index.DecodeXOR(buf)
 			if strings.HasSuffix(strings.ToLower(name), ".bnut") {
 				ggpack.DecodeBnut(buf)
+				// remove trailing zeros.
+				buf = trimZeros(buf)
 			}
 			fname := filepath.Join(dir, name)
 			return ioutil.WriteFile(fname, buf, 0666)
 		})
 	}()
+}
+
+func trimZeros(buf []byte) []byte {
+	for len(buf) > 0 && buf[len(buf)-1] == 0 {
+		buf = buf[:len(buf)-1]
+	}
+	return buf
 }
 
 func main() {
