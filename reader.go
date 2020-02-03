@@ -1,3 +1,10 @@
+// This is Free Software under the terms of the MIT License.
+//
+// SPDX-License-Identifier: MIT
+// icense-Filename: LICENSE
+//
+// Copyright (c) 2020 by Sascha L. Teichmann
+
 package ggpack
 
 import (
